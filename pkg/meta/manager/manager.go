@@ -8,7 +8,8 @@ import (
 )
 
 type MetaManager interface {
-	Update(vendor codec.MetaCodecVendor, fields map[string]string) error
+	Insert(vendor codec.MetaCodecVendor, fields map[string]string) error
+	Upsert(vendor codec.MetaCodecVendor, fields map[string]string) error
 	Extract(vendor codec.MetaCodecVendor, fields ...string) (map[string]string, error)
 	FileReader() io.Reader
 }

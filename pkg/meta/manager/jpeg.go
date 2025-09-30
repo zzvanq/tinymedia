@@ -12,22 +12,25 @@ import (
 	"github.com/zzvanq/tinymedia/pkg/meta/codec/tinymeta"
 )
 
-const headerSize = 2
+const (
+	sosMarker  = 0xFFDA
+	headerSize = 2
+)
 
 var (
 	ErrVendorNotSupported = errors.New("vendor not supported")
 	ErrMarkerNotFound     = errors.New("marker not found")
 )
 
+type Codec interface {
+	Encode(map[string]string) ([]byte, error)
+	Decode([]byte) (map[string]string, error)
+}
+
 type CodecVendor struct {
 	Codec       Codec
 	Marker      uint16
 	VendorMagic []byte
-}
-
-type Codec interface {
-	Encode(map[string]string) ([]byte, error)
-	Decode([]byte) (map[string]string, error)
 }
 
 var jpegVendorsCodec = map[codec.MetaCodecVendor]CodecVendor{
@@ -47,7 +50,27 @@ func NewJpegMetaManager(r io.Reader) *JpegMetaManager {
 	}
 }
 
-func (m *JpegMetaManager) Update(vendor codec.MetaCodecVendor, fields map[string]string) error {
+func (m *JpegMetaManager) Insert(vendor codec.MetaCodecVendor, fields map[string]string) error {
+	codecVendor, ok := jpegVendorsCodec[vendor]
+	if !ok {
+		return ErrVendorNotSupported
+	}
+
+	encoded, err := codecVendor.Codec.Encode(fields)
+	if err != nil {
+		return err
+	}
+
+	dataSize := headerSize + len(codecVendor.VendorMagic) + len(encoded)
+	segment := make([]byte, headerSize+dataSize)
+	binary.BigEndian.PutUint16(segment[:headerSize], codecVendor.Marker)
+	copy(segment[headerSize:], encoded)
+
+	m.segments = append([][]byte{segment}, m.segments...)
+	return nil
+}
+
+func (m *JpegMetaManager) Upsert(vendor codec.MetaCodecVendor, fields map[string]string) error {
 	codecVendor, ok := jpegVendorsCodec[vendor]
 	if !ok {
 		return ErrVendorNotSupported
@@ -55,7 +78,7 @@ func (m *JpegMetaManager) Update(vendor codec.MetaCodecVendor, fields map[string
 
 	i, ok := m.findSegment(codecVendor.Marker, codecVendor.VendorMagic)
 	if !ok {
-		return ErrMarkerNotFound
+		return m.Insert(vendor, fields)
 	}
 	segment := m.segments[i]
 	dataOffset := 2*headerSize + len(codecVendor.VendorMagic)
@@ -70,7 +93,11 @@ func (m *JpegMetaManager) Update(vendor codec.MetaCodecVendor, fields map[string
 	if err != nil {
 		return err
 	}
-	m.segments[i] = append(segment[:dataOffset], encoded...)
+
+	newSegment := append(segment[:dataOffset], encoded...)
+	newDataSize := headerSize + len(codecVendor.VendorMagic) + len(encoded)
+	binary.BigEndian.PutUint16(newSegment[headerSize:2*headerSize], uint16(newDataSize))
+	m.segments[i] = newSegment
 	return nil
 }
 
@@ -133,6 +160,11 @@ func (m *JpegMetaManager) findSegment(marker uint16, vendorMagic []byte) (int, b
 		vendorBytes := segment[2*headerSize : 2*headerSize+len(vendorMagic)]
 		if segMarker == marker && bytes.Equal(vendorBytes, vendorMagic) {
 			return len(m.segments) - 1, true
+		}
+
+		// there is no more metadata
+		if segMarker == sosMarker {
+			return 0, false
 		}
 	}
 }
