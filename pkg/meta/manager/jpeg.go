@@ -13,13 +13,15 @@ import (
 )
 
 const (
-	sosMarker  = 0xFFDA
-	headerSize = 2
+	sosMarker   = 0xFFDA
+	headerSize  = 2
+	dataMaxSize = 1 << 16
 )
 
 var (
-	ErrVendorNotSupported = errors.New("vendor not supported")
-	ErrMarkerNotFound     = errors.New("marker not found")
+	ErrVendorNotSupported = errors.New("JPEG: vendor not supported")
+	ErrMarkerNotFound     = errors.New("JPEG: marker not found")
+	ErrDataSizeTooLarge   = errors.New("JPEG: data size too large")
 )
 
 type Codec interface {
@@ -62,9 +64,14 @@ func (m *JpegMetaManager) Insert(vendor codec.MetaCodecVendor, fields map[string
 	}
 
 	dataSize := headerSize + len(codecVendor.VendorMagic) + len(encoded)
+	if dataSize > dataMaxSize {
+		return ErrDataSizeTooLarge
+	}
 	segment := make([]byte, headerSize+dataSize)
 	binary.BigEndian.PutUint16(segment[:headerSize], codecVendor.Marker)
-	copy(segment[headerSize:], encoded)
+	binary.BigEndian.PutUint16(segment[headerSize:2*headerSize], uint16(dataSize))
+	copy(segment[2*headerSize:2*headerSize+len(codecVendor.VendorMagic)], codecVendor.VendorMagic)
+	copy(segment[2*headerSize+len(codecVendor.VendorMagic):], encoded)
 
 	m.segments = append([][]byte{segment}, m.segments...)
 	return nil
@@ -76,9 +83,12 @@ func (m *JpegMetaManager) Upsert(vendor codec.MetaCodecVendor, fields map[string
 		return ErrVendorNotSupported
 	}
 
-	i, ok := m.findSegment(codecVendor.Marker, codecVendor.VendorMagic)
-	if !ok {
-		return m.Insert(vendor, fields)
+	i, err := m.findSegment(codecVendor.Marker, codecVendor.VendorMagic)
+	if err != nil {
+		if err == ErrMarkerNotFound {
+			return m.Insert(vendor, fields)
+		}
+		return err
 	}
 	segment := m.segments[i]
 	dataOffset := 2*headerSize + len(codecVendor.VendorMagic)
@@ -94,8 +104,12 @@ func (m *JpegMetaManager) Upsert(vendor codec.MetaCodecVendor, fields map[string
 		return err
 	}
 
-	newSegment := append(segment[:dataOffset], encoded...)
 	newDataSize := headerSize + len(codecVendor.VendorMagic) + len(encoded)
+	if newDataSize > dataMaxSize {
+		return ErrDataSizeTooLarge
+	}
+
+	newSegment := append(segment[:dataOffset], encoded...)
 	binary.BigEndian.PutUint16(newSegment[headerSize:2*headerSize], uint16(newDataSize))
 	m.segments[i] = newSegment
 	return nil
@@ -107,9 +121,12 @@ func (m *JpegMetaManager) Extract(vendor codec.MetaCodecVendor, fields ...string
 		return nil, ErrVendorNotSupported
 	}
 
-	i, ok := m.findSegment(codecVendor.Marker, codecVendor.VendorMagic)
-	if !ok {
-		return nil, ErrMarkerNotFound
+	i, err := m.findSegment(codecVendor.Marker, codecVendor.VendorMagic)
+	if err != nil {
+		if err == ErrMarkerNotFound {
+			return nil, ErrMarkerNotFound
+		}
+		return nil, err
 	}
 	segment := m.segments[i]
 	dataOffset := 2*headerSize + len(codecVendor.VendorMagic)
@@ -130,7 +147,7 @@ func (m *JpegMetaManager) Extract(vendor codec.MetaCodecVendor, fields ...string
 
 func (m *JpegMetaManager) FileReader() io.Reader {
 	readers := make([]io.Reader, 0, len(m.segments)+2)
-	readers[0] = bytes.NewReader(file.JPEGMagic)
+	readers = append(readers, bytes.NewReader(file.JPEGMagic))
 	for _, segment := range m.segments {
 		readers = append(readers, bytes.NewReader(segment))
 	}
@@ -139,16 +156,16 @@ func (m *JpegMetaManager) FileReader() io.Reader {
 }
 
 // 'm.r' must be at the start of a marker.
-func (m *JpegMetaManager) findSegment(marker uint16, vendorMagic []byte) (int, bool) {
-	i, ok := m.findParsed(marker, vendorMagic)
-	if ok {
-		return i, true
+func (m *JpegMetaManager) findSegment(marker uint16, vendorMagic []byte) (int, error) {
+	i, err := m.findParsed(marker, vendorMagic)
+	if err == ErrMarkerNotFound {
+		return i, nil
 	}
 
 	for {
 		segment, err := m.nextSegment()
 		if err != nil {
-			return 0, false
+			return 0, err
 		}
 		m.segments = append(m.segments, segment)
 
@@ -159,12 +176,12 @@ func (m *JpegMetaManager) findSegment(marker uint16, vendorMagic []byte) (int, b
 		segMarker := binary.BigEndian.Uint16(segment[0:headerSize])
 		vendorBytes := segment[2*headerSize : 2*headerSize+len(vendorMagic)]
 		if segMarker == marker && bytes.Equal(vendorBytes, vendorMagic) {
-			return len(m.segments) - 1, true
+			return len(m.segments) - 1, nil
 		}
 
 		// there is no more metadata
 		if segMarker == sosMarker {
-			return 0, false
+			return 0, ErrMarkerNotFound
 		}
 	}
 }
@@ -186,7 +203,7 @@ func (m *JpegMetaManager) nextSegment() ([]byte, error) {
 	return segment, nil
 }
 
-func (m *JpegMetaManager) findParsed(marker uint16, vendorMagic []byte) (int, bool) {
+func (m *JpegMetaManager) findParsed(marker uint16, vendorMagic []byte) (int, error) {
 	for i, s := range m.segments {
 		sMarker := binary.BigEndian.Uint16(s[:headerSize])
 		if sMarker != marker {
@@ -199,8 +216,8 @@ func (m *JpegMetaManager) findParsed(marker uint16, vendorMagic []byte) (int, bo
 
 		sVendorBytes := s[2*headerSize : 2*headerSize+len(vendorMagic)]
 		if bytes.Equal(sVendorBytes, vendorMagic) {
-			return i, true
+			return i, nil
 		}
 	}
-	return 0, false
+	return 0, ErrMarkerNotFound
 }

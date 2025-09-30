@@ -12,7 +12,7 @@ import (
 	"github.com/zzvanq/tinymedia/pkg/meta/manager"
 )
 
-func handleMeta(inputs []string, fields []string, vendor string) {
+func handleMeta(files []string, fields []string, vendor string) {
 	if vendor == "" {
 		fmt.Println("-mv is required when -m is used")
 		return
@@ -37,22 +37,42 @@ func handleMeta(inputs []string, fields []string, vendor string) {
 	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(inputs))
+	errCh := make(chan error, len(files))
 
-	wg.Add(len(inputs))
-	for _, input := range inputs {
+	wg.Add(len(files))
+	for _, f := range files {
 		go func() {
 			defer wg.Done()
-			file, err := os.Open(input)
+			file, err := os.Open(f)
 			if err != nil {
-				errCh <- fmt.Errorf("failed to open %s: %v", input, err)
+				errCh <- fmt.Errorf("failed to open %s: %w", f, err)
 				return
 			}
-			defer file.Close()
-			_, err = handleFileMeta(file, vendor, updateFields, readFields)
+			modifiedFile, err := handleFileMeta(file, vendor, updateFields, readFields)
 			if err != nil {
-				errCh <- fmt.Errorf("file %s: %s", input, err.Error())
+				errCh <- fmt.Errorf("file %s: %s", f, err.Error())
 				return
+			}
+
+			file.Close()
+			if updateFields != nil {
+				tmpFile, err := os.CreateTemp("", "tinymedia-*")
+				if err != nil {
+					errCh <- fmt.Errorf("failed to create temp file: %w", err)
+					return
+				}
+
+				defer tmpFile.Close()
+				if _, err := io.Copy(tmpFile, modifiedFile); err != nil {
+					errCh <- fmt.Errorf("failed to copy file: %w", err)
+					return
+				}
+
+				if err := os.Rename(tmpFile.Name(), file.Name()); err != nil {
+					os.Remove(tmpFile.Name())
+					errCh <- fmt.Errorf("failed to rename temp file: %w", err)
+					return
+				}
 			}
 		}()
 	}
@@ -68,13 +88,13 @@ func handleMeta(inputs []string, fields []string, vendor string) {
 }
 
 func handleFileMeta(file io.Reader, vendor string, updateFields map[string]string, readFields []string) (io.Reader, error) {
-	newReader := file
 	metaManager, err := manager.NewMetaManager(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata: %w", err)
 	}
 
-	if len(updateFields) != 0 {
+	newReader := file
+	if len(updateFields) > 0 {
 		if err := metaManager.Upsert(codec.MetaCodecVendor(vendor), updateFields); err != nil {
 			return nil, fmt.Errorf("failed to update metadata: %w", err)
 		}
