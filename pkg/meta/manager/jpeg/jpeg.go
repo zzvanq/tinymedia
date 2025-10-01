@@ -79,14 +79,20 @@ func (m *JpegMetaManager) Upsert(vendor codec.MetaCodecVendor, fields map[string
 	}
 
 	i, err := m.findSegment(c.Marker, c.VendorMagic)
-	if !ok {
-		return m.Insert(vendor, fields)
+	if err != nil {
+		if err == ErrMarkerNotFound {
+			return m.Insert(vendor, fields)
+		}
+		return err
 	}
 	s := m.segments[i]
 	dataOffset := 2*headerSize + len(c.VendorMagic)
-	decoded, err := c.Codec.Decode(s[dataOffset:])
-	if err != nil {
-		return err
+	decoded := make(map[string]string)
+	if len(s[dataOffset:]) > 0 {
+		decoded, err = c.Codec.Decode(s[dataOffset:])
+		if err != nil {
+			return err
+		}
 	}
 
 	maps.Copy(decoded, fields)

@@ -19,23 +19,7 @@ func handleMeta(fileNames []string, fields []string, vendor string) {
 		return
 	}
 
-	var (
-		readFields   []string
-		updateFields = make(map[string]string)
-	)
-	for _, field := range fields {
-		if field == "" {
-			continue
-		}
-
-		parts := strings.SplitN(field, "=", 2)
-		switch len(parts) {
-		case 1:
-			readFields = append(readFields, parts[0])
-		case 2:
-			updateFields[parts[0]] = parts[1]
-		}
-	}
+	readFields, updateFields := parseFields(fields)
 
 	errCh := make(chan error, len(fileNames))
 
@@ -44,36 +28,8 @@ func handleMeta(fileNames []string, fields []string, vendor string) {
 	for _, fn := range fileNames {
 		go func() {
 			defer wg.Done()
-			f, err := os.Open(fn)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to open %s: %w", fn, err)
-				return
-			}
-
-			metaManager, err := manager.NewMetaManager(f)
-			if err != nil {
-				errCh <- fmt.Errorf("failed to read metadata: %w", err)
-				return
-			}
-
-			var newReader io.Reader
-			if len(updateFields) > 0 {
-				if err := metaManager.Upsert(codec.MetaCodecVendor(vendor), updateFields); err != nil {
-					errCh <- fmt.Errorf("failed to update metadata: %w", err)
-					return
-				}
-				newReader = metaManager.FileReader()
-			}
-
-			if len(readFields) > 0 {
-				if err := printMeta(metaManager, vendor, readFields); err != nil {
-					errCh <- err
-				}
-			}
-			f.Close()
-
-			if updateFields != nil {
-				file.UpdateFile(newReader, f.Name())
+			if err := processFile(fn, vendor, readFields, updateFields); err != nil {
+				errCh <- err
 			}
 		}()
 	}
@@ -88,16 +44,70 @@ func handleMeta(fileNames []string, fields []string, vendor string) {
 	}
 }
 
-func printMeta(metaManager manager.MetaManager, vendor string, fields []string) error {
+func processFile(fn string, vendor string, readFields []string, updateFields map[string]string) error {
+	f, err := os.Open(fn)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	metaManager, err := manager.NewMetaManager(f)
+	if err != nil {
+		return err
+	}
+
+	var newReader io.Reader
+	if len(updateFields) > 0 {
+		if err := metaManager.Upsert(codec.MetaCodecVendor(vendor), updateFields); err != nil {
+			return err
+		}
+		newReader = metaManager.FileReader()
+	}
+
+	if len(readFields) > 0 {
+		result, err := printMeta(metaManager, vendor, readFields)
+		if err != nil {
+			return err
+		}
+		fmt.Println("File="+fn, result)
+	}
+
+	if len(updateFields) > 0 {
+		file.UpdateFile(newReader, f.Name())
+	}
+	return nil
+}
+
+func parseFields(fields []string) ([]string, map[string]string) {
+	var readFields []string
+	updateFields := make(map[string]string)
+
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+
+		parts := strings.SplitN(field, "=", 2)
+		switch len(parts) {
+		case 1:
+			readFields = append(readFields, parts[0])
+		case 2:
+			updateFields[parts[0]] = parts[1]
+		}
+	}
+
+	return readFields, updateFields
+}
+
+func printMeta(metaManager manager.MetaManager, vendor string, fields []string) (string, error) {
 	extracted, err := metaManager.Extract(codec.MetaCodecVendor(vendor), fields...)
 	if err != nil {
-		return fmt.Errorf("failed to read metadata: %w", err)
+		return "", err
 	}
 
 	resultBuilder := strings.Builder{}
 	for k, v := range extracted {
 		resultBuilder.WriteString(fmt.Sprintf("%s=%s\n", strconv.Quote(k), strconv.Quote(v)))
 	}
-	fmt.Println(resultBuilder.String())
-	return nil
+	return resultBuilder.String(), nil
 }
