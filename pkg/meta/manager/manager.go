@@ -5,6 +5,7 @@ import (
 
 	"github.com/zzvanq/tinymedia/pkg/file"
 	"github.com/zzvanq/tinymedia/pkg/meta/codec"
+	"github.com/zzvanq/tinymedia/pkg/meta/manager/jpeg"
 )
 
 type MetaManager interface {
@@ -21,7 +22,7 @@ func NewMetaManager(r io.Reader) (MetaManager, error) {
 	}
 	switch fileType {
 	case file.FileTypeJPEG:
-		return NewJpegMetaManager(r), nil
+		return jpeg.NewJpegMetaManager(r), nil
 	default:
 		return nil, file.ErrUnsupportedFileType
 	}

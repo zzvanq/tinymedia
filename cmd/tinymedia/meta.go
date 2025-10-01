@@ -8,11 +8,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zzvanq/tinymedia/pkg/file"
 	"github.com/zzvanq/tinymedia/pkg/meta/codec"
 	"github.com/zzvanq/tinymedia/pkg/meta/manager"
 )
 
-func handleMeta(files []string, fields []string, vendor string) {
+func handleMeta(fileNames []string, fields []string, vendor string) {
 	if vendor == "" {
 		fmt.Println("-mv is required when -m is used")
 		return
@@ -36,43 +37,43 @@ func handleMeta(files []string, fields []string, vendor string) {
 		}
 	}
 
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(files))
+	errCh := make(chan error, len(fileNames))
 
-	wg.Add(len(files))
-	for _, f := range files {
+	var wg sync.WaitGroup
+	wg.Add(len(fileNames))
+	for _, fn := range fileNames {
 		go func() {
 			defer wg.Done()
-			file, err := os.Open(f)
+			f, err := os.Open(fn)
 			if err != nil {
-				errCh <- fmt.Errorf("failed to open %s: %w", f, err)
-				return
-			}
-			modifiedFile, err := handleFileMeta(file, vendor, updateFields, readFields)
-			if err != nil {
-				errCh <- fmt.Errorf("file %s: %s", f, err.Error())
+				errCh <- fmt.Errorf("failed to open %s: %w", fn, err)
 				return
 			}
 
-			file.Close()
+			metaManager, err := manager.NewMetaManager(f)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to read metadata: %w", err)
+				return
+			}
+
+			var newReader io.Reader
+			if len(updateFields) > 0 {
+				if err := metaManager.Upsert(codec.MetaCodecVendor(vendor), updateFields); err != nil {
+					errCh <- fmt.Errorf("failed to update metadata: %w", err)
+					return
+				}
+				newReader = metaManager.FileReader()
+			}
+
+			if len(readFields) > 0 {
+				if err := printMeta(metaManager, vendor, readFields); err != nil {
+					errCh <- err
+				}
+			}
+			f.Close()
+
 			if updateFields != nil {
-				tmpFile, err := os.CreateTemp("", "tinymedia-*")
-				if err != nil {
-					errCh <- fmt.Errorf("failed to create temp file: %w", err)
-					return
-				}
-
-				defer tmpFile.Close()
-				if _, err := io.Copy(tmpFile, modifiedFile); err != nil {
-					errCh <- fmt.Errorf("failed to copy file: %w", err)
-					return
-				}
-
-				if err := os.Rename(tmpFile.Name(), file.Name()); err != nil {
-					os.Remove(tmpFile.Name())
-					errCh <- fmt.Errorf("failed to rename temp file: %w", err)
-					return
-				}
+				file.UpdateFile(newReader, f.Name())
 			}
 		}()
 	}
@@ -87,30 +88,16 @@ func handleMeta(files []string, fields []string, vendor string) {
 	}
 }
 
-func handleFileMeta(file io.Reader, vendor string, updateFields map[string]string, readFields []string) (io.Reader, error) {
-	metaManager, err := manager.NewMetaManager(file)
+func printMeta(metaManager manager.MetaManager, vendor string, fields []string) error {
+	extracted, err := metaManager.Extract(codec.MetaCodecVendor(vendor), fields...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read metadata: %w", err)
-	}
-
-	newReader := file
-	if len(updateFields) > 0 {
-		if err := metaManager.Upsert(codec.MetaCodecVendor(vendor), updateFields); err != nil {
-			return nil, fmt.Errorf("failed to update metadata: %w", err)
-		}
-
-		newReader = metaManager.FileReader()
-	}
-
-	fields, err := metaManager.Extract(codec.MetaCodecVendor(vendor), readFields...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read metadata: %w", err)
+		return fmt.Errorf("failed to read metadata: %w", err)
 	}
 
 	resultBuilder := strings.Builder{}
-	for field, value := range fields {
-		resultBuilder.WriteString(fmt.Sprintf("%s=%s\n", strconv.Quote(field), strconv.Quote(value)))
+	for k, v := range extracted {
+		resultBuilder.WriteString(fmt.Sprintf("%s=%s\n", strconv.Quote(k), strconv.Quote(v)))
 	}
 	fmt.Println(resultBuilder.String())
-	return newReader, nil
+	return nil
 }
