@@ -3,6 +3,7 @@ package file
 import (
 	"bytes"
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -38,4 +39,29 @@ func Test_ReadFileType(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_UpdateFile(t *testing.T) {
+	file, err := os.CreateTemp("./", "test")
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(file.Name())
+	file.Close()
+
+	want := []byte{0xFF, 0xD8, 0x00, 0x02}
+	r := bytes.NewReader(want)
+	if err := UpdateFile(r, file.Name()); err != nil {
+		t.Errorf("want error: %v, got: %v", nil, err)
+	}
+
+	got, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Errorf("want error: %v, got: %v", nil, err)
+	}
+
+	if !bytes.Equal(got, want) {
+		t.Errorf("want: %v, got: %v", want, got)
+	}
+	defer file.Close()
 }
