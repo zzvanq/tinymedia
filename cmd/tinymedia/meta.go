@@ -69,7 +69,7 @@ func processFile(fn string, vendor string, readFields []string, updateFields map
 		if err != nil {
 			return err
 		}
-		fmt.Println("File="+fn, result)
+		fmt.Print("File=", fn, "\n", result, "\n")
 	}
 
 	if len(updateFields) > 0 {

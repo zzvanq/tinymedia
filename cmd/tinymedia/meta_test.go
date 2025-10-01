@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -102,7 +103,99 @@ func Test_handleMeta_Update(t *testing.T) {
 	}
 }
 
-func Test_handleMeta_MultipleFiles(t *testing.T) {
+func Test_handleMeta_ReadNonExistentField(t *testing.T) {
+	testFile := filepath.Join("./", "test.jpg")
+	createTestJPEG(t, testFile, "tinymeta", map[string]string{
+		"artist": "Test Artist",
+	})
+	defer os.Remove(testFile)
+
+	cmd := exec.Command("./tinymedia.test",
+		"-i", testFile,
+		"-m", "nonexistent,artist",
+		"-mv", "tinymeta",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read failed: %v\noutput: %s", err, output)
+	}
+
+	got := string(output)
+	if !strings.Contains(got, kvQuote("artist", "Test Artist")) {
+		t.Errorf("missing artist field:\n%s", got)
+	}
+	if strings.Contains(got, `"nonexistent"=`) {
+		t.Errorf("shouldn't return value for nonexistent field:\n%s", got)
+	}
+}
+
+func Test_handleMeta_SpecialCharactersInValues(t *testing.T) {
+	testFile := filepath.Join("./", "test.jpg")
+	createTestJPEG(t, testFile, "tinymeta", nil)
+	defer os.Remove(testFile)
+
+	tests := []struct {
+		name  string
+		field string
+		value string
+	}{
+		{
+			name:  "quotes",
+			field: "title",
+			value: `Title with "quotes"`,
+		},
+		{
+			name:  "newlines",
+			field: "description",
+			value: "Line1\nLine2",
+		},
+		{
+			name:  "unicode",
+			field: "artist",
+			value: "Ääkköset 日本語",
+		},
+		{
+			name:  "empty value",
+			field: "comment",
+			value: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("./tinymedia.test",
+				"-i", testFile,
+				"-m", fmt.Sprintf("%s=%s", tt.field, tt.value),
+				"-mv", "tinymeta",
+			)
+
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("insert failed: %v\noutput: %s", err, output)
+			}
+
+			cmd = exec.Command("./tinymedia.test",
+				"-i", testFile,
+				"-m", tt.field,
+				"-mv", "tinymeta",
+			)
+
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("read failed: %v\noutput: %s", err, output)
+			}
+
+			got := string(output)
+			fmt.Println(tt.name, got)
+			if !strings.Contains(got, kvQuote(tt.field, tt.value)) {
+				t.Errorf("field not properly stored, got:\n%s", got)
+			}
+		})
+	}
+}
+
+func Test_handleMeta_UpdateMultipleFiles(t *testing.T) {
 	file1 := filepath.Join("./", "test1.jpg")
 	file2 := filepath.Join("./", "test2.jpg")
 
@@ -142,6 +235,26 @@ func Test_handleMeta_MultipleFiles(t *testing.T) {
 	}
 }
 
+func Test_handleMeta_InvalidVendor(t *testing.T) {
+	testFile := filepath.Join("./", "test.jpg")
+	createTestJPEG(t, testFile, "tinymeta", map[string]string{
+		"artist": "Test Artist",
+	})
+	defer os.Remove(testFile)
+
+	cmd := exec.Command("./tinymedia.test",
+		"-i", testFile,
+		"-m", "artist",
+		"-mv", "invalidvendor",
+	)
+
+	output, err := cmd.CombinedOutput()
+	got := string(output)
+	if err == nil && !strings.Contains(got, "vendor not supported") {
+		t.Errorf("expected error for invalid vendor, got:\n%s", got)
+	}
+}
+
 func Test_handleMeta_MissingVendor(t *testing.T) {
 	testFile := filepath.Join("./", "test.jpg")
 	createTestJPEG(t, testFile, "tinymeta", nil)
@@ -173,6 +286,76 @@ func Test_handleMeta_NonexistentFile(t *testing.T) {
 	if !strings.Contains(got, "failed to open") && !strings.Contains(got, "no such file") {
 		t.Errorf("expected file not found error, got:\n%s", got)
 	}
+}
+
+func Test_handleMeta_UpdateSingleFieldInMultiple(t *testing.T) {
+	testFile := filepath.Join("./", "test.jpg")
+	createTestJPEG(t, testFile, "tinymeta", map[string]string{
+		"artist": "Original Artist",
+		"album":  "Original Album",
+		"title":  "Original Title",
+	})
+	defer os.Remove(testFile)
+
+	cmd := exec.Command("./tinymedia.test",
+		"-i", testFile,
+		"-m", "album=New Album",
+		"-mv", "tinymeta",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("update failed: %v\noutput: %s", err, output)
+	}
+
+	cmd = exec.Command("./tinymedia.test",
+		"-i", testFile,
+		"-m", "artist,album,title",
+		"-mv", "tinymeta",
+	)
+
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read failed: %v\noutput: %s", err, output)
+	}
+
+	got := string(output)
+	if !strings.Contains(got, kvQuote("artist", "Original Artist")) {
+		t.Errorf("artist was changed:\n%s", got)
+	}
+	if !strings.Contains(got, kvQuote("album", "New Album")) {
+		t.Errorf("album not updated:\n%s", got)
+	}
+	if !strings.Contains(got, kvQuote("title", "Original Title")) {
+		t.Errorf("title was changed:\n%s", got)
+	}
+}
+
+func Test_handleMeta_EmptyMetadataSection(t *testing.T) {
+	testFile := filepath.Join("./", "test.jpg")
+	createTestJPEG(t, testFile, "tinymeta", nil)
+	defer os.Remove(testFile)
+
+	cmd := exec.Command("./tinymedia.test",
+		"-i", testFile,
+		"-m", "artist",
+		"-mv", "tinymeta",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("update failed: %v\noutput: %s", err, output)
+	}
+
+	got := string(output)
+	if !strings.Contains(got, "marker not found") {
+		t.Errorf("expected 'marker not found', got:\n%s", got)
+	}
+	if strings.Contains(got, `"artist"=`) {
+		t.Errorf("shouldn't return artist for empty metadata:\n%s", got)
+	}
+
+	_ = err
 }
 
 func Test_handleMeta_MixedReadAndUpdate(t *testing.T) {
@@ -332,5 +515,5 @@ func createTestJPEG(t *testing.T, path string, vendor string, metadata map[strin
 }
 
 func kvQuote(key, value string) string {
-	return fmt.Sprintf(`"%s"="%s"`, key, value)
+	return fmt.Sprintf(`%s=%s`, strconv.Quote(key), strconv.Quote(value))
 }
