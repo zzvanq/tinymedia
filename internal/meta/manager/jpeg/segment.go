@@ -6,7 +6,6 @@ import (
 	"io"
 )
 
-// 'm.r' must be at the start of a marker.
 func (m *JpegMetaManager) findSegment(marker uint16, vendorMagic []byte) (int, error) {
 	i, err := m.findParsed(marker, vendorMagic)
 	if err == nil {
@@ -37,6 +36,11 @@ func (m *JpegMetaManager) findSegment(marker uint16, vendorMagic []byte) (int, e
 func (m *JpegMetaManager) nextSegment() ([]byte, error) {
 	headers := make([]byte, 2*headerSize)
 	if _, err := io.ReadFull(m.r, headers); err != nil {
+		return nil, ErrCorruptedSegment
+	}
+
+	// filler bytes specification is intentionally ignored
+	if headers[0] != 0xFF || headers[1] == 0xFF || headers[1] == 0x00 {
 		return nil, ErrCorruptedSegment
 	}
 

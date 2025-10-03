@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	fileUpdate "github.com/zzvanq/tinymedia/internal/file"
 	"github.com/zzvanq/tinymedia/pkg/file"
 	"github.com/zzvanq/tinymedia/pkg/meta/codec"
 	"github.com/zzvanq/tinymedia/pkg/meta/manager"
@@ -51,7 +52,12 @@ func processFile(fn string, vendor string, readFields []string, updateFields map
 	}
 	defer f.Close()
 
-	metaManager, err := manager.NewMetaManager(f)
+	r, ftype, err := file.ReadFileType(f)
+	if err != nil {
+		return err
+	}
+
+	metaManager, err := manager.NewMetaManager(r, ftype)
 	if err != nil {
 		return err
 	}
@@ -65,7 +71,7 @@ func processFile(fn string, vendor string, readFields []string, updateFields map
 	}
 
 	if len(readFields) > 0 {
-		result, err := printMeta(metaManager, vendor, readFields)
+		result, err := formatMeta(metaManager, vendor, readFields)
 		if err != nil {
 			return err
 		}
@@ -73,7 +79,7 @@ func processFile(fn string, vendor string, readFields []string, updateFields map
 	}
 
 	if len(updateFields) > 0 {
-		file.UpdateFile(newReader, f.Name())
+		fileUpdate.UpdateFile(newReader, f.Name())
 	}
 	return nil
 }
@@ -99,7 +105,7 @@ func parseFields(fields []string) ([]string, map[string]string) {
 	return readFields, updateFields
 }
 
-func printMeta(metaManager manager.MetaManager, vendor string, fields []string) (string, error) {
+func formatMeta(metaManager manager.MetaManager, vendor string, fields []string) (string, error) {
 	extracted, err := metaManager.Extract(codec.MetaCodecVendor(vendor), fields...)
 	if err != nil {
 		return "", err

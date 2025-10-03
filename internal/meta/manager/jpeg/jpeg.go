@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 
-	"github.com/zzvanq/tinymedia/pkg/file"
+	"github.com/zzvanq/tinymedia/internal/file/magic"
 	"github.com/zzvanq/tinymedia/pkg/meta/codec"
 	"github.com/zzvanq/tinymedia/pkg/meta/codec/tinymeta"
 )
@@ -42,15 +43,27 @@ var JpegVendorsCodec = map[codec.MetaCodecVendor]CodecVendor{
 }
 
 type JpegMetaManager struct {
+	prefix   []byte
 	r        io.Reader
 	segments [][]byte
 }
 
-func NewJpegMetaManager(r io.Reader) *JpegMetaManager {
+// no filler bytes before the marker
+func NewJpegMetaManager(r io.Reader) (*JpegMetaManager, error) {
+	prefix := make([]byte, 2)
+	if _, err := io.ReadFull(r, prefix); err != nil {
+		return nil, fmt.Errorf("failed to read the magic bytes")
+	}
+
+	if !bytes.Equal(prefix, magic.JPEGMagic) {
+		panic("not a jpeg")
+	}
+
 	return &JpegMetaManager{
+		prefix:   prefix,
 		r:        r,
 		segments: [][]byte{},
-	}
+	}, nil
 }
 
 func (m *JpegMetaManager) Insert(vendor codec.MetaCodecVendor, fields map[string]string) error {
@@ -145,7 +158,7 @@ func (m *JpegMetaManager) Extract(vendor codec.MetaCodecVendor, fields ...string
 
 func (m *JpegMetaManager) FileReader() io.Reader {
 	readers := make([]io.Reader, 0, len(m.segments)+2)
-	readers = append(readers, bytes.NewReader(file.JPEGMagic))
+	readers = append(readers, bytes.NewReader(m.prefix))
 	for _, segment := range m.segments {
 		readers = append(readers, bytes.NewReader(segment))
 	}

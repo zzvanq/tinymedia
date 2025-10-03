@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/zzvanq/tinymedia/internal/meta/manager/jpeg"
 	"github.com/zzvanq/tinymedia/pkg/file"
-	"github.com/zzvanq/tinymedia/pkg/meta/manager/jpeg"
 )
 
 func Test_NewMetaManager(t *testing.T) {
@@ -32,7 +32,12 @@ func Test_NewMetaManager(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewMetaManager(tt.r)
+			r, ftype, err := file.ReadFileType(tt.r)
+			if err != tt.wantErr {
+				t.Errorf("want no error, got: %v", err)
+			}
+
+			got, err := NewMetaManager(r, ftype)
 			if err != tt.wantErr {
 				t.Errorf("want error: %v, got: %v", tt.wantErr, err)
 			}

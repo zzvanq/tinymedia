@@ -3,9 +3,9 @@ package manager
 import (
 	"io"
 
+	"github.com/zzvanq/tinymedia/internal/meta/manager/jpeg"
 	"github.com/zzvanq/tinymedia/pkg/file"
 	"github.com/zzvanq/tinymedia/pkg/meta/codec"
-	"github.com/zzvanq/tinymedia/pkg/meta/manager/jpeg"
 )
 
 type MetaManager interface {
@@ -15,14 +15,10 @@ type MetaManager interface {
 	FileReader() io.Reader
 }
 
-func NewMetaManager(r io.Reader) (MetaManager, error) {
-	fileType, err := file.ReadFileType(r)
-	if err != nil {
-		return nil, err
-	}
-	switch fileType {
+func NewMetaManager(r io.Reader, ftype file.FileType) (MetaManager, error) {
+	switch ftype {
 	case file.FileTypeJPEG:
-		return jpeg.NewJpegMetaManager(r), nil
+		return jpeg.NewJpegMetaManager(r)
 	default:
 		return nil, file.ErrUnsupportedFileType
 	}
